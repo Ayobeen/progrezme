@@ -16,7 +16,20 @@ class MissionForm(forms.ModelForm):
         fields = ['title', 'instructions', 'minutes']
         widgets = {'instructions': forms.Textarea(attrs={'rows': 5})}
 
-MissionFormSet = forms.inlineformset_factory(RecoveryPlan, RecoveryMission, form=MissionForm, extra=0, can_delete=False, min_num=3, max_num=3, validate_min=True, validate_max=True)
+class ExistingMissionFormSet(forms.BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        expected = set(self.get_queryset().values_list('pk', flat=True))
+        submitted = [form.cleaned_data.get('id') for form in self.forms]
+        ids = [mission.pk for mission in submitted if mission is not None]
+        if (self.initial_form_count() != 3 or len(expected) != 3
+                or len(ids) != 3 or set(ids) != expected):
+            raise forms.ValidationError('Review all three original missions exactly once. Reload the plan and try again.')
+
+
+MissionFormSet = forms.inlineformset_factory(RecoveryPlan, RecoveryMission, form=MissionForm, formset=ExistingMissionFormSet, extra=0, can_delete=False, min_num=3, max_num=3, validate_min=True, validate_max=True)
 
 class SessionForm(forms.ModelForm):
     class Meta:

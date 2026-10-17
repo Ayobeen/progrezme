@@ -6,14 +6,24 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
 from django.db import transaction
-from django.http import HttpResponseForbidden
+from django.http import Http404, HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from .models import Course, Journey, Lesson, LessonProgress, Attempt, CheckIn, RecoveryPlan, Encouragement
 from .forms import ReviewForm, MissionFormSet, SessionForm, PreferencesForm
 from .services import (momentum, risk_reasons, signals, create_recovery, milestones_for,
-    lesson_unlocked, target_lesson, record_activity, evaluate_recovery)
+    lesson_unlocked, target_lesson, record_activity, evaluate_recovery, recovery_progress_count)
+
+
+def request_id(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise Http404('Invalid identifier')
+    if not 0 < number <= 9223372036854775807:
+        raise Http404('Invalid identifier')
+    return number
 
 
 def educator_required(view):
@@ -90,7 +100,7 @@ def journey_detail(request, pk):
 
 @login_required
 def lesson_detail(request, pk):
-    journey = get_object_or_404(Journey, pk=request.GET.get('journey') or request.POST.get('journey'), learner=request.user)
+    journey = get_object_or_404(Journey, pk=request_id(request.GET.get('journey') or request.POST.get('journey')), learner=request.user)
     lesson = get_object_or_404(Lesson, pk=pk, milestone__course=journey.course)
     if not lesson_unlocked(journey, lesson):
         messages.info(request, 'Demonstrate the previous milestone’s competencies to unlock this lesson.')
@@ -98,7 +108,7 @@ def lesson_detail(request, pk):
     plan = None
     plan_id = request.GET.get('plan') or request.POST.get('plan')
     if plan_id:
-        plan = get_object_or_404(RecoveryPlan, pk=plan_id, journey=journey, target_lesson=lesson, status='APPROVED')
+        plan = get_object_or_404(RecoveryPlan, pk=request_id(plan_id), journey=journey, target_lesson=lesson, status='APPROVED')
         if plan.missions.count() != 3 or plan.missions.filter(completed_at__isnull=True).exists():
             messages.error(request, 'Complete the three assigned missions before reassessment.')
             return redirect('recovery', pk=plan.pk)
@@ -174,7 +184,7 @@ def recovery(request, pk):
             if plan.status != 'APPROVED':
                 messages.error(request, 'Missions must be assigned by an educator before you begin.')
             elif request.POST.get('action') == 'mission':
-                mission = get_object_or_404(plan.missions, pk=request.POST.get('mission'))
+                mission = get_object_or_404(plan.missions, pk=request_id(request.POST.get('mission')))
                 reflection = request.POST.get('reflection', '').strip()
                 if plan.missions.filter(order__lt=mission.order, completed_at__isnull=True).exists():
                     messages.error(request, 'Complete the previous mission first.')
@@ -191,7 +201,7 @@ def recovery(request, pk):
         return redirect('recovery', pk=pk)
     missions = list(plan.missions.all())
     ready = len(missions) == 3 and all(m.completed_at for m in missions)
-    return render(request, 'core/recovery.html', {'plan': plan, 'missions': missions, 'ready': ready, 'completed_count': plan.journey.progress.filter(completed=True).count()})
+    return render(request, 'core/recovery.html', {'plan': plan, 'missions': missions, 'ready': ready, 'completed_count': recovery_progress_count(plan)})
 
 
 @educator_required
@@ -253,7 +263,7 @@ def review(request, pk):
                 formset.save()
                 messages.success(request, 'Intervention approved and assigned to the learner.' if action == 'approve' else 'Draft changes saved.')
                 return redirect('review', pk=pk)
-    return render(request, 'core/review.html', {'plan': plan, 'form': form, 'formset': formset, 'missions': plan.missions.all(), 'completed_count': plan.journey.progress.filter(completed=True).count()})
+    return render(request, 'core/review.html', {'plan': plan, 'form': form, 'formset': formset, 'missions': plan.missions.all(), 'completed_count': recovery_progress_count(plan)})
 
 
 @login_required

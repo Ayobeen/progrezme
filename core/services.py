@@ -23,7 +23,7 @@ def signals(journey):
     attempts = list(Attempt.objects.filter(journey=journey).order_by('-created_at', '-id')[:10])
     return {
         'days_inactive': max(0, (now - journey.last_active_at).days),
-        'missed_sessions': journey.sessions.filter(scheduled_for__lt=now, completed_at__isnull=True).count(),
+        'missed_sessions': journey.sessions.filter(scheduled_for__date__lt=timezone.localdate(now), completed_at__isnull=True).count(),
         'repeated_difficulties': journey.progress.filter(attempts__gte=2, completed=False).count(),
         'recent_scores': [a.score for a in reversed(attempts)],
         'completed_lessons': journey.progress.filter(completed=True).count(),
@@ -146,6 +146,7 @@ def evaluate_recovery(plan, attempt):
         return False
     plan.followup_score = attempt.score
     progress = plan.journey.progress.filter(completed=True).count()
+    plan.evidence = {**plan.evidence, 'followup_completed': progress}
     gained = progress > plan.baseline_completed
     improved = plan.baseline_score is not None and attempt.score >= plan.baseline_score + 20
     successful = attempt.score >= 70 and (improved or gained)
@@ -155,5 +156,13 @@ def evaluate_recovery(plan, attempt):
         plan.outcome = f'Target competency demonstrated at {attempt.score}%. Completed lessons: {plan.baseline_completed} → {progress}. Learning resumed through three missions and a new assessment.'
     else:
         plan.outcome = f'Follow-up score: {attempt.score}%. Recovery is not yet evidenced. Review the lesson and retry; a pass of at least 70% plus score improvement or new lesson progress is required.'
-    plan.save(update_fields=['followup_score', 'status', 'completed_at', 'outcome'])
+    plan.save(update_fields=['followup_score', 'status', 'completed_at', 'outcome', 'evidence'])
     return successful
+
+
+def recovery_progress_count(plan):
+    # Do not attribute subsequent learning to a historical reassessment.
+    # Older plans without a snapshot are shown as unknown, never reconstructed.
+    if plan.followup_score is not None:
+        return plan.evidence.get('followup_completed')
+    return plan.journey.progress.filter(completed=True).count()
